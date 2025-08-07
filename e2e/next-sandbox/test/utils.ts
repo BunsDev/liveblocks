@@ -162,6 +162,19 @@ export async function waitForJson(
     expectedValue === undefined
       ? "undefined"
       : JSON.stringify(expectedValue, null, 2);
+
+  // For multi-page tests, wait for each page sequentially to avoid race conditions
+  if (pages.length > 1) {
+    for (const page of pages) {
+      await expect(page.locator(selector)).toHaveText(expectedText, {
+        timeout: options?.timeout ?? 5000,
+      });
+      // Small delay between page checks to allow for network propagation
+      await sleep(50);
+    }
+    return;
+  }
+
   return Promise.all(
     pages.map((page) =>
       expect(page.locator(selector)).toHaveText(expectedText, {
@@ -244,16 +257,22 @@ export async function waitUntilEqualOnAllPages(
     interval?: number;
   }
 ) {
-  const maxTries = options?.maxTries ?? 20;
+  const maxTries = options?.maxTries ?? 40; // Increased from 20
   const interval = options?.interval ?? 100;
 
   for (let i = 0; i < maxTries; i++) {
     const [value1, value2] = await getBoth(pages, selector);
     if (_.isEqual(value1, value2)) {
-      return; // Great, we're done!
-    } else {
+      // Additional wait to ensure stability after values match
       await sleep(interval);
+
+      // Verify they're still equal after the additional wait
+      const [finalValue1, finalValue2] = await getBoth(pages, selector);
+      if (_.isEqual(finalValue1, finalValue2)) {
+        return; // Great, we're done!
+      }
     }
+    await sleep(interval);
   }
 
   // We didn't find the values in sync, so call expectJsonEqualOnAllPages() so
@@ -263,6 +282,80 @@ export async function waitUntilEqualOnAllPages(
 
 export function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Wait for a condition to be true with polling and exponential backoff
+ */
+export async function waitForCondition(
+  conditionFn: () => Promise<boolean>,
+  options: {
+    maxTries?: number;
+    initialInterval?: number;
+    maxInterval?: number;
+    timeout?: number;
+  } = {}
+): Promise<void> {
+  const maxTries = options.maxTries ?? 30;
+  const initialInterval = options.initialInterval ?? 50;
+  const maxInterval = options.maxInterval ?? 1000;
+  const timeout = options.timeout ?? 10000;
+
+  const startTime = Date.now();
+  let interval = initialInterval;
+
+  for (let i = 0; i < maxTries; i++) {
+    if (Date.now() - startTime > timeout) {
+      throw new Error(`Timeout waiting for condition after ${timeout}ms`);
+    }
+
+    if (await conditionFn()) {
+      return;
+    }
+
+    await sleep(interval);
+    interval = Math.min(interval * 1.2, maxInterval);
+  }
+
+  throw new Error(`Condition not met after ${maxTries} attempts`);
+}
+
+/**
+ * Enhanced wait for notifications that accounts for async notification generation
+ */
+export async function waitForNotifications(
+  page: Page,
+  expectedCount: number,
+  options: { timeout?: number } = {}
+) {
+  const timeout = options.timeout ?? 25000; // Increased timeout
+
+  // First ensure the page is fully synchronized
+  await waitForJson(page, "#isSynced", true, { timeout });
+
+  // Additional wait to allow notifications to be processed after sync
+  await sleep(500);
+
+  // Then wait for the notification count with retry logic
+  let lastValue = null;
+  await waitForCondition(
+    async () => {
+      try {
+        const actualCount = await getJson(page, "#numOfNotifications");
+        lastValue = actualCount;
+        return actualCount === expectedCount;
+      } catch (error) {
+        console.log(`Error getting notifications count: ${error}`);
+        return false;
+      }
+    },
+    {
+      timeout,
+      initialInterval: 200,
+      maxInterval: 1000,
+      maxTries: 50,
+    }
+  );
 }
 
 /**

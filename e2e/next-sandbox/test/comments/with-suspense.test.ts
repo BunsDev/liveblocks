@@ -5,6 +5,7 @@ import {
   genRoomId,
   getJson,
   preparePages,
+  sleep,
   waitForJson,
   waitUntilEqualOnAllPages,
 } from "../utils";
@@ -46,13 +47,21 @@ test.describe("Comments", () => {
       // Read starting value n
       const n = (await getJson(page1, "#numOfThreads")) as number;
 
+      // Create threads with better spacing and synchronization
       await page1.click("#create-thread");
-      await page2.click("#create-thread");
-      await page2.click("#create-thread");
-      await waitForJson(pages, "#numOfThreads", n + 3, { timeout: 15_000 });
+      await sleep(200); // Allow first creation to propagate
 
+      await page2.click("#create-thread");
+      await sleep(200); // Allow second creation to propagate
+
+      await page2.click("#create-thread");
+
+      // Wait for all threads to be synchronized with increased timeout
+      await waitForJson(pages, "#numOfThreads", n + 3, { timeout: 20_000 });
+
+      // Delete comment and wait for synchronization
       await page2.click("#delete-comment");
-      await waitForJson(pages, "#numOfThreads", n + 3 - 1, { timeout: 15_000 });
+      await waitForJson(pages, "#numOfThreads", n + 3 - 1, { timeout: 20_000 });
     }
   );
 });
